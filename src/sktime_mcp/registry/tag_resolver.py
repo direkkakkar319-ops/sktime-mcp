@@ -38,133 +38,84 @@ class TagResolver:
     This class provides utilities for understanding and querying tags.
     """
     
-    # Common tags and their descriptions (based on sktime documentation)
-    TAG_DEFINITIONS: Dict[str, TagInfo] = {
-        # Forecasting capability tags
-        "capability:pred_int": TagInfo(
-            name="capability:pred_int",
-            description="Can produce prediction intervals (probabilistic forecasts)",
-            value_type="bool",
-            category="capability",
-        ),
-        "capability:pred_var": TagInfo(
-            name="capability:pred_var",
-            description="Can produce variance forecasts",
-            value_type="bool",
-            category="capability",
-        ),
-        "capability:insample": TagInfo(
-            name="capability:insample",
-            description="Can produce in-sample predictions",
-            value_type="bool",
-            category="capability",
-        ),
-        "capability:missing_values": TagInfo(
-            name="capability:missing_values",
-            description="Can handle missing values in input data",
-            value_type="bool",
-            category="capability",
-        ),
-        
-        # Data type tags
-        "scitype:y": TagInfo(
-            name="scitype:y",
-            description="Supported target data types",
-            value_type="str",
-            possible_values=["univariate", "multivariate", "both"],
-            category="data",
-        ),
-        "y_inner_mtype": TagInfo(
-            name="y_inner_mtype",
-            description="Internal data type for y",
-            value_type="str",
-            category="data",
-        ),
-        "X_inner_mtype": TagInfo(
-            name="X_inner_mtype",
-            description="Internal data type for X",
-            value_type="str",
-            category="data",
-        ),
-        
-        # Fit/predict behavior tags
-        "requires-fh-in-fit": TagInfo(
-            name="requires-fh-in-fit",
-            description="Requires forecasting horizon at fit time",
-            value_type="bool",
-            category="behavior",
-        ),
-        "handles-missing-data": TagInfo(
-            name="handles-missing-data",
-            description="Can handle missing data in time series",
-            value_type="bool",
-            category="behavior",
-        ),
-        "ignores-exogeneous-X": TagInfo(
-            name="ignores-exogeneous-X",
-            description="Ignores exogenous variables if passed",
-            value_type="bool",
-            category="behavior",
-        ),
-        
-        # Transformation tags
-        "transform-returns-same-time-index": TagInfo(
-            name="transform-returns-same-time-index",
-            description="Transform output has same time index as input",
-            value_type="bool",
-            category="transformation",
-        ),
-        "skip-inverse-transform": TagInfo(
-            name="skip-inverse-transform",
-            description="Inverse transform should be skipped in pipelines",
-            value_type="bool",
-            category="transformation",
-        ),
-        "univariate-only": TagInfo(
-            name="univariate-only",
-            description="Only works with univariate time series",
-            value_type="bool",
-            category="constraint",
-        ),
-        
-        # Classification tags
-        "capability:multivariate": TagInfo(
-            name="capability:multivariate",
-            description="Can handle multivariate time series",
-            value_type="bool",
-            category="capability",
-        ),
-        "capability:unequal_length": TagInfo(
-            name="capability:unequal_length",
-            description="Can handle unequal length time series",
-            value_type="bool",
-            category="capability",
-        ),
-        "capability:missing_values": TagInfo(
-            name="capability:missing_values",
-            description="Can handle missing values",
-            value_type="bool",
-            category="capability",
-        ),
-        
-        # Python requirements
-        "python_version": TagInfo(
-            name="python_version",
-            description="Required Python version constraint",
-            value_type="str",
-            category="requirements",
-        ),
-        "python_dependencies": TagInfo(
-            name="python_dependencies",
-            description="Required Python package dependencies",
-            value_type="list",
-            category="requirements",
-        ),
-    }
+    # Cache for tag definitions loaded from sktime
+    _tag_definitions_cache: Optional[Dict[str, TagInfo]] = None
     
     def __init__(self):
         """Initialize the tag resolver."""
         self._registry = get_registry()
+        self._load_tag_definitions()
+    
+    def _load_tag_definitions(self):
+        """Load tag definitions from sktime.registry.all_tags()."""
+        if TagResolver._tag_definitions_cache is not None:
+            return
+        
+        try:
+            from sktime.registry import all_tags
+            all_tags_list = all_tags(as_dataframe=False)
+            
+            tag_definitions = {}
+            for tag_tuple in all_tags_list:
+                tag_name = tag_tuple[0]
+                scitype = tag_tuple[1]  # Can be a string or list of strings
+                tag_type = tag_tuple[2]  # Can be 'bool', 'str', 'int', or tuple like ('str', [...])
+                description = tag_tuple[3]
+                
+                # Determine value_type and possible_values
+                value_type = "str"
+                possible_values = None
+                
+                if isinstance(tag_type, tuple):
+                    value_type = tag_type[0]
+                    if len(tag_type) > 1 and isinstance(tag_type[1], list):
+                        possible_values = tag_type[1]
+                elif tag_type in ["bool", "str", "int", "type", "dict"]:
+                    value_type = tag_type
+                
+                # Determine category based on tag name prefix or scitype
+                category = "general"
+                if tag_name.startswith("capability:"):
+                    category = "capability"
+                elif tag_name.startswith("scitype:"):
+                    category = "data"
+                elif tag_name.startswith("requires"):
+                    category = "behavior"
+                elif tag_name.startswith("transform"):
+                    category = "transformation"
+                elif tag_name.startswith("python_"):
+                    category = "requirements"
+                elif "mtype" in tag_name:
+                    category = "data"
+                elif isinstance(scitype, str):
+                    category = scitype
+                elif isinstance(scitype, list) and len(scitype) > 0:
+                    category = scitype[0]
+                
+                tag_definitions[tag_name] = TagInfo(
+                    name=tag_name,
+                    description=description,
+                    value_type=value_type,
+                    possible_values=possible_values,
+                    category=category,
+                )
+            
+            TagResolver._tag_definitions_cache = tag_definitions
+            logger.info(f"Loaded {len(tag_definitions)} tag definitions from sktime")
+            
+        except ImportError as e:
+            logger.warning(f"Could not import sktime.registry.all_tags: {e}")
+            TagResolver._tag_definitions_cache = {}
+        except Exception as e:
+            logger.error(f"Error loading tag definitions: {e}")
+            TagResolver._tag_definitions_cache = {}
+    
+    @property
+    def TAG_DEFINITIONS(self) -> Dict[str, TagInfo]:
+        """Get tag definitions, loading them if necessary."""
+        if TagResolver._tag_definitions_cache is None:
+            self._load_tag_definitions()
+        return TagResolver._tag_definitions_cache or {}
     
     def get_tag_info(self, tag_name: str) -> Optional[TagInfo]:
         """

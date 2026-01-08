@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 # Available demo datasets
+# L-5: We can add more datasets here by directly wrapping on top of sktime datasets (https://www.sktime.net/en/latest/api_reference/datasets.html)
+# L-6: We can also add custom datasets here
 DEMO_DATASETS = {
     "airline": "sktime.datasets.load_airline",
     "longley": "sktime.datasets.load_longley",
@@ -64,6 +66,7 @@ class Executor:
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    # L-7: We can also add custom load_dataset functions here
     def load_dataset(self, name: str) -> Dict[str, Any]:
         """Load a demo dataset."""
         if name not in DEMO_DATASETS:
@@ -183,6 +186,7 @@ class Executor:
         
         return self.predict(handle_id, fh=fh, X=X)
     
+    # L-9: We can add more methods here to handle diverse use cases and their pipelines
     def instantiate_pipeline(
         self,
         components: List[str],

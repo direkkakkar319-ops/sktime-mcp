@@ -46,7 +46,7 @@ class EstimatorNode:
             "module": self.module,
             "tags": self.tags,
             "hyperparameters": self.hyperparameters,
-            "docstring": self.docstring[:500] if self.docstring else None,
+            "docstring": self.docstring[:500] if self.docstring else None, # L-1: Truncate docstring to 500 characters, we can also try summarization
         }
     
     def to_summary(self) -> Dict[str, str]:
@@ -77,7 +77,7 @@ class RegistryInterface:
         "clusterer": "clustering",
         "param_est": "parameter_estimation",
         "splitter": "splitting",
-        # "alignment": "alignment", It is failing, but I can investigate it later
+        # "alignment": "alignment", L-2: It is failing, but I will investigate it later
         "network": "network",
     }
     
@@ -95,6 +95,7 @@ class RegistryInterface:
     
     def _load_registry(self):
         """Load all estimators from sktime's registry."""
+        # L-3: Sometimes, We need to import other packages as well to load the estimators 
         try:
             from sktime.registry import all_estimators
         except ImportError as e:
