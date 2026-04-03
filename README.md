@@ -348,3 +348,25 @@ sktime_mcp/
 ```bash
 pytest tests/
 ```
+
+## Local Quality Checks
+
+Run standardized local checks before raising a PR:
+
+```bash
+make check
+```
+
+Auto-fix formatting and fixable lint issues:
+
+```bash
+make format-fix
+```
+
+If `make` is unavailable (common on Windows), run the equivalent commands:
+
+```bash
+python -m black --check .
+python -m ruff check .
+python -m pytest
+```
