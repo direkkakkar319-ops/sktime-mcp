@@ -35,6 +35,28 @@ python -m sktime_mcp.server
 pytest
 ```
 
+## Standard Local Checks
+
+From the repo root:
+
+```bash
+make check
+```
+
+Auto-fix formatting and fixable lint issues:
+
+```bash
+make format-fix
+```
+
+If `make` is unavailable (common on Windows), run:
+
+```bash
+python -m black --check .
+python -m ruff check .
+python -m pytest
+```
+
 ## Project Layout
 
 - `src/sktime_mcp/server.py` MCP entry point and tool router
