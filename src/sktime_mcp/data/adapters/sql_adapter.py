@@ -5,7 +5,7 @@ Supports loading data from SQL databases using SQLAlchemy.
 """
 
 import re
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import pandas as pd
 
@@ -140,7 +140,7 @@ class SQLAdapter(DataSourceAdapter):
 
         return f"{dialect}://{auth}{host}{port_str}/{database}"
 
-    def _get_query(self) -> Tuple[Any, Dict[str, Any]]:
+    def _get_query(self) -> tuple[Any, dict[str, Any]]:
         """Get SQL query and parameters from config."""
         from sqlalchemy import text
 
@@ -156,17 +156,15 @@ class SQLAdapter(DataSourceAdapter):
 
         # Simple query builder
         query = f"SELECT * FROM {table}"
-        query_params: Dict[str, Any] = {}
+        query_params: dict[str, Any] = {}
 
         # Add filters if provided
         filters = self.config.get("filters", {})
         if filters:
             conditions = []
-            param_idx = 0
-            for col, value in filters.items():
+            for param_idx, (col, value) in enumerate(filters.items()):
                 column_name = self._validate_identifier(col, "column")
                 param_name = f"filter_{param_idx}"
-                param_idx += 1
 
                 # Simple filter handling
                 if isinstance(value, str) and value.startswith((">=", "<=", ">", "<", "!=")):
@@ -189,8 +187,7 @@ class SQLAdapter(DataSourceAdapter):
 
         if not re.fullmatch(r"[a-zA-Z0-9_.]+", identifier):
             raise ValueError(
-                f"Invalid {kind} identifier '{identifier}'. "
-                "Only [a-zA-Z0-9_.] are allowed."
+                f"Invalid {kind} identifier '{identifier}'. " "Only [a-zA-Z0-9_.] are allowed."
             )
         return identifier
 
