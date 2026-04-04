@@ -187,7 +187,7 @@ class SQLAdapter(DataSourceAdapter):
 
         if not re.fullmatch(r"[a-zA-Z0-9_.]+", identifier):
             raise ValueError(
-                f"Invalid {kind} identifier '{identifier}'. " "Only [a-zA-Z0-9_.] are allowed."
+                f"Invalid {kind} identifier '{identifier}'. Only [a-zA-Z0-9_.] are allowed."
             )
         return identifier
 
