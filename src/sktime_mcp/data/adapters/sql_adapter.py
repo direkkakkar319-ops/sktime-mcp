@@ -4,11 +4,11 @@ SQL adapter for database connections.
 Supports loading data from SQL databases using SQLAlchemy.
 """
 
-from typing import Any
-
-import pandas as pd
 import re
 from typing import Any, Dict, Tuple
+
+import pandas as pd
+
 from ..base import DataSourceAdapter
 
 
@@ -59,7 +59,7 @@ class SQLAdapter(DataSourceAdapter):
 
         # Get query
         query, query_params = self._get_query()
-        
+
         # Create engine and load data
         engine = create_engine(conn_string)
 
@@ -68,12 +68,12 @@ class SQLAdapter(DataSourceAdapter):
             parse_dates = self.config.get("parse_dates", [])
             if not parse_dates and self.config.get("time_column"):
                 parse_dates = [self.config["time_column"]]
-            
+
             df = pd.read_sql(
                 query,
                 engine,
                 params=query_params if query_params else None,
-                parse_dates=parse_dates if parse_dates else None
+                parse_dates=parse_dates if parse_dates else None,
             )
         finally:
             engine.dispose()
@@ -139,7 +139,7 @@ class SQLAdapter(DataSourceAdapter):
         port_str = f":{port}" if port else ""
 
         return f"{dialect}://{auth}{host}{port_str}/{database}"
-    
+
     def _get_query(self) -> Tuple[Any, Dict[str, Any]]:
         """Get SQL query and parameters from config."""
         from sqlalchemy import text
@@ -147,17 +147,17 @@ class SQLAdapter(DataSourceAdapter):
         # Check if query is provided directly
         if "query" in self.config:
             return self.config["query"], self.config.get("query_params", {})
-        
+
         # Build query from table and filters
         table = self.config.get("table")
         if not table:
             raise ValueError("Must provide 'query' or 'table'")
         table = self._validate_identifier(table, "table")
-        
+
         # Simple query builder
         query = f"SELECT * FROM {table}"
         query_params: Dict[str, Any] = {}
-        
+
         # Add filters if provided
         filters = self.config.get("filters", {})
         if filters:
@@ -177,9 +177,9 @@ class SQLAdapter(DataSourceAdapter):
                 else:
                     conditions.append(f"{column_name} = :{param_name}")
                     query_params[param_name] = value
-            
+
             query += " WHERE " + " AND ".join(conditions)
-        
+
         return text(query), query_params
 
     def _validate_identifier(self, identifier: str, kind: str) -> str:
@@ -193,7 +193,7 @@ class SQLAdapter(DataSourceAdapter):
                 "Only [a-zA-Z0-9_.] are allowed."
             )
         return identifier
-    
+
     def _sanitize_connection_string(self, conn_string: str) -> str:
         """Remove credentials from connection string for metadata."""
         # Hide password in connection string
