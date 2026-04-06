@@ -298,6 +298,7 @@ def load_model_tool(path: str) -> dict[str, Any]:
             "path": path,
             "message": f"Successfully loaded {estimator_name}",
         }
+
     except Exception as e:
         return {
             "success": False,
