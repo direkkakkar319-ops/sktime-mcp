@@ -313,6 +313,14 @@ async def list_tools() -> list[Tool]:
                         "description": "Whether to include a fit/predict example (default: false)",
                         "default": False,
                     },
+                    "dataset": {
+                        "type": "string",
+                        "description": (
+                            "Optional dataset name for the fit example "
+                            "(e.g. 'airline', 'sunspots'). "
+                            "Defaults to 'airline' if omitted."
+                        ),
+                    },
                 },
                 "required": ["handle"],
             },
@@ -619,6 +627,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 arguments["handle"],
                 arguments.get("var_name", "model"),
                 arguments.get("include_fit_example", False),
+                arguments.get("dataset"),
             )
         elif name == "load_data_source":
             result = load_data_source_tool(arguments["config"])
