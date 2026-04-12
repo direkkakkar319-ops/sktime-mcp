@@ -41,7 +41,7 @@ def _check_stationarity(y: pd.Series) -> dict[str, Any]:
         return {
             "adf_statistic": round(adf_stat, 4),
             "adf_pvalue": round(p_value, 4),
-            "is_stationary": p_value < 0.05,
+            "is_stationary": bool(p_value < 0.05),
         }
     except Exception as e:
         logger.debug(f"Stationarity test failed: {e}")
@@ -101,7 +101,7 @@ def _detect_seasonality(y: pd.Series, freq: Optional[str]) -> dict[str, Any]:
                     best_acf = val
                     best_period = lag
 
-        detected = best_acf > 0.3
+        detected = bool(best_acf > 0.3)
         if best_acf > 0.7:
             strength = "strong"
         elif best_acf > 0.4:
