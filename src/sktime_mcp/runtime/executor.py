@@ -827,18 +827,6 @@ class Executor:
             "changes_made": changes_made,
         }
 
-    def fit_predict_with_data(
-        self,
-        estimator_handle: str,
-        data_handle: str,
-        horizon: int = 12,
-    ) -> dict[str, Any]:
-        """Deprecated: use :meth:`fit_predict` with ``data_handle=...``."""
-        logger.warning(
-            "fit_predict_with_data is deprecated; use fit_predict(..., data_handle=...) instead."
-        )
-        return self.fit_predict(estimator_handle, "", horizon=horizon, data_handle=data_handle)
-
     def list_data_handles(self) -> dict[str, Any]:
         """
         List all loaded data handles.

@@ -78,19 +78,6 @@ def sanitize_for_json(obj):
         return obj
 
 
-# ===================================================================
-# Tool definitions
-# ===================================================================
-# Consolidation changes applied (see docs/TOOL_CONSOLIDATION_PLAN.md):
-#   1. list_data_sources   -> baked into load_data_source description
-#   2. auto_format_on_load -> env var SKTIME_MCP_AUTO_FORMAT (default true)
-#   3. cleanup_old_jobs    -> automatic periodic timer
-#   4. delete_job          -> merged into cancel_job(delete=True)
-#   5. search_estimators   -> merged into list_estimators(query=...)
-#   6. fit_predict_with_data -> removed; use fit_predict(data_handle=...)
-# ===================================================================
-
-
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """List all available MCP tools."""
