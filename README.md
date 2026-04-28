@@ -562,3 +562,10 @@ python -m black --check .
 python -m ruff check .
 python -m pytest
 ```
+
+### Pre-Commit Hooks (Recommended)
+To ensure your code meets quality standards before pushing, install the pre-commit hooks:
+```bash
+make install-hooks
+```
+This will automatically run Black, Ruff, and Pytest on your code every time you make a commit.
