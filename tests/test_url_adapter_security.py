@@ -22,8 +22,6 @@ import pytest
 
 from sktime_mcp.data.adapters.url_adapter import _ALLOWED_SCHEMES, UrlAdapter
 
-# ─── helpers ────────────────────────────────────────────────────────────────
-
 
 def _write_csv(directory: str, filename: str = "data.csv", rows: int = 20) -> Path:
     """Write a small CSV file and return its path."""
@@ -106,9 +104,6 @@ def slow_server():
     tmp.cleanup()
 
 
-# ─── scheme enforcement ─────────────────────────────────────────────────────
-
-
 class TestSchemeEnforcement:
     """URL scheme must be http or https; everything else is rejected."""
 
@@ -129,7 +124,6 @@ class TestSchemeEnforcement:
             UrlAdapter._validate_url("/etc/passwd")
 
     def test_http_scheme_accepted(self):
-        # Should not raise — only checks scheme + hostname, not connectivity
         UrlAdapter._validate_url("http://example.com/data.csv")
 
     def test_https_scheme_accepted(self):
@@ -141,9 +135,6 @@ class TestSchemeEnforcement:
 
     def test_allowed_schemes_constant(self):
         assert {"http", "https"} == _ALLOWED_SCHEMES
-
-
-# ─── private-IP blocking (opt-in) ───────────────────────────────────────────
 
 
 class TestPrivateIpBlocking:
@@ -186,9 +177,6 @@ class TestPrivateIpBlocking:
             UrlAdapter._validate_url("http://example.com/data.csv", block_private_ips=True)
 
 
-# ─── load() scheme enforcement end-to-end ────────────────────────────────────
-
-
 class TestLoadSchemeEnforcement:
     """load() and load_async() must both reject bad schemes before connecting."""
 
@@ -213,9 +201,6 @@ class TestLoadSchemeEnforcement:
         adapter = UrlAdapter({"url": "ftp://example.com/data.csv"})
         with pytest.raises(ValueError, match="not allowed"):
             await adapter.load_async()
-
-
-# ─── local http.server integration ──────────────────────────────────────────
 
 
 class TestLocalServerIntegration:
@@ -281,9 +266,6 @@ class TestLocalServerIntegration:
         assert len(df) == 20
 
 
-# ─── download timeout ───────────────────────────────────────────────────────
-
-
 class TestDownloadTimeout:
     """Sync download should respect timeout configuration."""
 
@@ -300,9 +282,6 @@ class TestDownloadTimeout:
         # should raise URLError/socket.timeout which we wrap as ValueError.
         with pytest.raises(ValueError):
             adapter.load()
-
-
-# ─── max-bytes cap ───────────────────────────────────────────────────────────
 
 
 class TestMaxBytesCap:
@@ -331,9 +310,6 @@ class TestMaxBytesCap:
         )
         df = adapter.load()
         assert len(df) == 20
-
-
-# ─── config validation ──────────────────────────────────────────────────────
 
 
 class TestConfigValidation:
