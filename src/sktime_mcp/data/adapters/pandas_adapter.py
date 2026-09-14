@@ -13,19 +13,33 @@ import pandas as pd
 from ..base import DataSourceAdapter
 
 
+def _safe_infer_freq(index: pd.Index) -> str | None:
+    """pd.infer_freq requires >= 3 points and raises otherwise; return None instead.
+
+    A 1–2 row series is a valid (if tiny) time series — it should load with no
+    frequency rather than crash with pandas' "Need at least 3 dates" ValueError.
+    """
+    if len(index) < 3:
+        return None
+    with contextlib.suppress(ValueError, TypeError):
+        return pd.infer_freq(index)
+    return None
+
+
 class PandasAdapter(DataSourceAdapter):
     """
     Adapter for in-memory pandas DataFrames.
 
-    Config example:
-    {
-        "type": "pandas",
-        "data": <DataFrame object or dict>,
-        "time_column": "date",  # optional, will try to detect
-        "target_column": "value",  # optional, defaults to first column
-        "exog_columns": ["feature1", "feature2"],  # optional
-        "frequency": "D"  # optional, will try to infer
-    }
+    Config example::
+
+        {
+            "type": "pandas",
+            "data": <DataFrame object or dict>,
+            "time_column": "date",  # optional, will try to detect
+            "target_column": "value",  # optional, defaults to first column
+            "exog_columns": ["feature1", "feature2"],  # optional
+            "frequency": "D"  # optional, will try to infer
+        }
     """
 
     def load(self) -> pd.DataFrame:
@@ -48,7 +62,11 @@ class PandasAdapter(DataSourceAdapter):
 
         if time_col:
             # User specified time column
-            if time_col not in df.columns:
+            if isinstance(time_col, list):
+                missing = [c for c in time_col if c not in df.columns]
+                if missing:
+                    raise ValueError(f"Time columns {missing} not found in data")
+            elif time_col not in df.columns:
                 raise ValueError(f"Time column '{time_col}' not found in data")
             df = df.set_index(time_col)
         elif not isinstance(df.index, (pd.DatetimeIndex, pd.RangeIndex, pd.Index)):
@@ -58,7 +76,7 @@ class PandasAdapter(DataSourceAdapter):
                 df = df.set_index(time_col)
 
         # Only ensure datetime index if it's already specified or looks like one
-        if not isinstance(df.index, pd.DatetimeIndex) and time_col:
+        if not isinstance(df.index, (pd.DatetimeIndex, pd.MultiIndex)) and time_col:
             try:
                 df.index = pd.to_datetime(df.index)
             except Exception as e:
@@ -75,8 +93,8 @@ class PandasAdapter(DataSourceAdapter):
             with contextlib.suppress(Exception):
                 df = df.asfreq(freq)
         elif isinstance(df.index, pd.DatetimeIndex) and df.index.freq is None:
-            # Try to infer frequency
-            inferred_freq = pd.infer_freq(df.index)
+            # Try to infer frequency (needs >= 3 points; short series just skip it)
+            inferred_freq = _safe_infer_freq(df.index)
             if inferred_freq:
                 df = df.asfreq(inferred_freq)
 
@@ -84,7 +102,7 @@ class PandasAdapter(DataSourceAdapter):
 
         # Determine frequency for metadata
         if isinstance(df.index, pd.DatetimeIndex):
-            freq_str = str(df.index.freq) if df.index.freq else pd.infer_freq(df.index)
+            freq_str = str(df.index.freq) if df.index.freq else _safe_infer_freq(df.index)
         else:
             freq_str = "Integer"
 
@@ -126,9 +144,11 @@ class PandasAdapter(DataSourceAdapter):
         warnings = []
 
         # Check for sktime-compatible index
-        if not isinstance(data.index, (pd.DatetimeIndex, pd.RangeIndex, pd.PeriodIndex, pd.Index)):
+        if not isinstance(
+            data.index, (pd.DatetimeIndex, pd.RangeIndex, pd.PeriodIndex, pd.Index, pd.MultiIndex)
+        ):
             errors.append(
-                "Index must be DatetimeIndex, PeriodIndex, or RangeIndex for sktime forecasting"
+                "Index must be DatetimeIndex, PeriodIndex, RangeIndex, or MultiIndex for sktime forecasting"
             )
 
         # Additional check: if it's a generic Index, ensure it's at least numeric or string-period-like
@@ -153,10 +173,15 @@ class PandasAdapter(DataSourceAdapter):
             missing_pct = (missing_counts / len(data) * 100).round(2)
             warnings.append(f"Missing values detected: {missing_pct[missing_pct > 0].to_dict()}")
 
-        # Check for duplicate indices
-        if data.index.duplicated().any():
-            dup_count = data.index.duplicated().sum()
-            errors.append(f"Duplicate time indices found: {dup_count} duplicates")
+        # Check for duplicate indices — a warning, not a hard error, so the
+        # auto-format step (remove_duplicates) can actually run on the handle.
+        # Rejecting here made that documented remedy unreachable (BUG-19).
+        if not isinstance(data.index, pd.MultiIndex) and data.index.duplicated().any():
+            dup_count = int(data.index.duplicated().sum())
+            warnings.append(
+                f"Duplicate time indices found: {dup_count}. They will be de-duplicated "
+                "by auto-format (keeping the first of each)."
+            )
 
         # Check for monotonic index
         if not data.index.is_monotonic_increasing:
@@ -168,14 +193,31 @@ class PandasAdapter(DataSourceAdapter):
                 f"Very small dataset ({len(data)} rows). Consider using more data for reliable forecasting."
             )
 
+        # Check that the target column is numeric — forecasting cannot use an
+        # object/string target, and this otherwise passes silently and fails
+        # deep inside fit (#533 / NB-07).
+        target_col = self.config.get("target_column")
+        if target_col is None and len(data.columns) > 0:
+            target_col = data.columns[0]
+        if (
+            target_col is not None
+            and target_col in data.columns
+            and not pd.api.types.is_numeric_dtype(data[target_col])
+        ):
+            warnings.append(
+                f"Target column '{target_col}' has non-numeric dtype "
+                f"'{data[target_col].dtype}'. Forecasting requires numeric values; "
+                "convert the column before fitting."
+            )
+
         # Check for constant values
         for col in data.columns:
             if data[col].nunique() == 1:
                 warnings.append(f"Column '{col}' has constant values")
 
-        # Check frequency
-        if isinstance(data.index, pd.DatetimeIndex):
-            freq = pd.infer_freq(data.index)
+        # Check frequency (infer_freq needs >= 3 points; short series skip it)
+        if isinstance(data.index, pd.DatetimeIndex) and len(data.index) >= 3:
+            freq = _safe_infer_freq(data.index)
             if freq is None:
                 warnings.append(
                     "Could not infer frequency. Time series may have irregular intervals."

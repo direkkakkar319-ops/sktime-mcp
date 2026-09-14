@@ -5,7 +5,6 @@ Supports loading data from local files with automatic format detection.
 """
 
 import contextlib
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -13,107 +12,41 @@ import pandas as pd
 
 from ..base import DataSourceAdapter
 
-logger = logging.getLogger(__name__)
-
-# Sensitive paths that should never be accessed regardless of allowed_directories
-_SENSITIVE_PATHS_UNIX = {
-    "/etc/passwd",
-    "/etc/shadow",
-    "/etc/hosts",
-    "/proc",
-    "/sys",
-    "/dev",
-}
-_SENSITIVE_PATHS_WIN = {
-    r"C:\Windows\System32\config",
-}
-
 
 class FileAdapter(DataSourceAdapter):
     """
     Adapter for file-based data sources.
 
-    Config example:
-    {
-        "type": "file",
-        "path": "/path/to/data.csv",
-        "format": "csv",  # csv, excel, parquet (auto-detected if not specified)
+    Config example::
 
-        # Column mapping
-        "time_column": "date",
-        "target_column": "value",
-        "exog_columns": ["feature1", "feature2"],
+        {
+            "type": "file",
+            "path": "/path/to/data.csv",
+            "format": "csv",  # csv, excel, parquet (auto-detected if not specified)
 
-        # Security: restrict file access to specific directories
-        # If not set, defaults to the current working directory
-        "allowed_directories": ["/data", "/home/user/datasets"],
+            # Column mapping
+            "time_column": "date",
+            "target_column": "value",
+            "exog_columns": ["feature1", "feature2"],
 
-        # CSV-specific options
-        "csv_options": {
-            "sep": ",",
-            "header": 0,
-            "encoding": "utf-8"
-        },
+            # CSV-specific options
+            "csv_options": {
+                "sep": ",",
+                "header": 0,
+                "encoding": "utf-8"
+            },
 
-        # Excel-specific options
-        "excel_options": {
-            "sheet_name": 0,
-            "header": 0
-        },
+            # Excel-specific options
+            "excel_options": {
+                "sheet_name": 0,
+                "header": 0
+            },
 
-        # Common options
-        "parse_dates": True,
-        "frequency": "D"
-    }
+            # Common options
+            "parse_dates": True,
+            "frequency": "D"
+        }
     """
-
-    @staticmethod
-    def _validate_path(
-        path: Path,
-        allowed_directories: list[str] | None = None,
-    ) -> None:
-        """Validate that the file path is within allowed directories.
-
-        Resolves symlinks before checking to prevent directory-traversal attacks.
-
-        Args:
-            path: The file path to validate.
-            allowed_directories: Explicit list of allowed directory prefixes.
-                If ``None``, defaults to the current working directory.
-
-        Raises:
-            ValueError: If the path is outside allowed directories or targets
-                a known sensitive location.
-        """
-        # Resolve to a real, absolute path (resolves symlinks and ".." segments)
-        resolved = path.resolve()
-
-        # Block known sensitive paths
-        resolved_str = str(resolved)
-        for sensitive in _SENSITIVE_PATHS_UNIX | _SENSITIVE_PATHS_WIN:
-            if resolved_str.startswith(sensitive):
-                raise ValueError(f"Access to '{resolved}' is blocked: sensitive system path.")
-
-        # Determine allowed roots
-        if allowed_directories:
-            allowed_roots = [Path(d).resolve() for d in allowed_directories]
-        else:
-            allowed_roots = [Path.cwd().resolve()]
-
-        # Check that resolved path falls under at least one allowed root
-        for root in allowed_roots:
-            try:
-                resolved.relative_to(root)
-                return  # Path is within this allowed root
-            except ValueError:
-                continue
-
-        allowed_list = ", ".join(str(r) for r in allowed_roots)
-        raise ValueError(
-            f"Access denied: '{resolved}' is outside the allowed directories "
-            f"({allowed_list}). Configure 'allowed_directories' in the adapter "
-            "config to grant access."
-        )
 
     def load(self) -> pd.DataFrame:
         """Load from file."""
@@ -122,10 +55,6 @@ class FileAdapter(DataSourceAdapter):
             raise ValueError("Config must contain 'path' key")
 
         path = Path(path_str)
-
-        # Validate path is within allowed directories
-        allowed_dirs = self.config.get("allowed_directories")
-        self._validate_path(path, allowed_dirs)
 
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
@@ -142,13 +71,20 @@ class FileAdapter(DataSourceAdapter):
             df = self._load_excel(path)
         elif file_format == "parquet":
             df = self._load_parquet(path)
+        elif file_format == "json":
+            df = self._load_json(path)
         else:
             raise ValueError(
-                f"Unsupported format: {file_format}. Supported formats: csv, excel, parquet"
+                f"Unsupported format: {file_format}. Supported formats: csv, excel, parquet, json"
             )
 
         # Set time index
         time_col = self.config.get("time_column")
+        if time_col is not None and time_col not in df.columns:
+            available = ", ".join(repr(c) for c in df.columns)
+            raise ValueError(
+                f"Time column {time_col!r} not found in data. Available columns: [{available}]"
+            )
         if time_col and time_col in df.columns:
             if self.config.get("parse_dates", True):
                 with contextlib.suppress(Exception):
@@ -179,7 +115,9 @@ class FileAdapter(DataSourceAdapter):
 
         # Determine frequency for metadata
         if isinstance(df.index, pd.DatetimeIndex):
-            freq_str = str(df.index.freq) if df.index.freq else pd.infer_freq(df.index)
+            from .pandas_adapter import _safe_infer_freq
+
+            freq_str = str(df.index.freq) if df.index.freq else _safe_infer_freq(df.index)
         else:
             freq_str = "Integer"
 
@@ -209,6 +147,7 @@ class FileAdapter(DataSourceAdapter):
             ".xls": "excel",
             ".parquet": "parquet",
             ".pq": "parquet",
+            ".json": "json",
         }
 
         file_format = format_map.get(suffix)
@@ -232,11 +171,10 @@ class FileAdapter(DataSourceAdapter):
         if path.suffix.lower() == ".tsv":
             csv_options["sep"] = "\t"
 
-        # Parse dates if specified
-        parse_dates = self.config.get("parse_dates", True)
-        if parse_dates and self.config.get("time_column"):
-            csv_options["parse_dates"] = [self.config["time_column"]]
-
+        # Note: the time column is parsed to datetime in load() after we've
+        # confirmed it exists — passing parse_dates=[col] here for a missing
+        # column leaks a raw pandas "Missing column provided to 'parse_dates'"
+        # error (#533 / NB-11).
         try:
             df = pd.read_csv(path, **csv_options)
         except Exception as e:
@@ -282,10 +220,27 @@ class FileAdapter(DataSourceAdapter):
 
         return df
 
+    def _load_json(self, path: Path) -> pd.DataFrame:
+        """Load a JSON file written by save_data (records orient)."""
+        json_options = self.config.get("json_options", {})
+        json_options.setdefault("orient", "records")
+        try:
+            df = pd.read_json(path, **json_options)
+        except Exception as e:
+            raise ValueError(f"Error reading JSON file: {e}") from e
+        return df
+
     def validate(self, data: pd.DataFrame) -> tuple[bool, dict[str, Any]]:
         """Validate file data using pandas adapter validation."""
         from .pandas_adapter import PandasAdapter
 
-        # Reuse pandas validation logic
-        pandas_adapter = PandasAdapter({"data": data})
+        # Reuse pandas validation logic, forwarding the column config so the
+        # target-dtype check applies to file sources too.
+        pandas_adapter = PandasAdapter(
+            {
+                "data": data,
+                "target_column": self.config.get("target_column"),
+                "exog_columns": self.config.get("exog_columns", []),
+            }
+        )
         return pandas_adapter.validate(data)

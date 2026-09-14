@@ -4,7 +4,6 @@ fit_predict tool for sktime MCP.
 Executes complete forecasting workflows.
 """
 
-import asyncio
 import logging
 from typing import Any
 
@@ -13,88 +12,235 @@ from sktime_mcp.runtime.executor import get_executor
 logger = logging.getLogger(__name__)
 
 
-def fit_predict_tool(
-    estimator_handle: str,
-    dataset: str,
-    horizon: int = 12,
-) -> dict[str, Any]:
+def _validate_horizon(horizon: Any) -> dict[str, Any]:
     """
-    Execute a complete fit-predict workflow.
-
-    Args:
-        estimator_handle: Handle from instantiate_estimator
-        dataset: Name of demo dataset (e.g., "airline", "sunspots")
-        horizon: Forecast horizon (default: 12)
-
-    Returns:
-        Dictionary with:
-        - success: bool
-        - predictions: Forecast values
-        - horizon: Number of steps predicted
-
-    Example:
-        >>> fit_predict_tool("est_abc123", "airline", horizon=12)
-        {
-            "success": True,
-            "predictions": {1: 450.2, 2: 460.5, ...},
-            "horizon": 12
+    Validate the horizon parameter.
+    Checks if the horizon parameter is strictly integer or not
+    Checks if the horizon parameter is greater than 0 or not
+    """
+    warnings = []
+    if not isinstance(horizon, int):
+        return {
+            "valid": False,
+            "error": (
+                f"'horizon' must be an integer, got {type(horizon).__name__}. "
+                f'Example: {{"horizon": 12}}'
+            ),
+            "warnings": warnings,
         }
-    """
-    executor = get_executor()
-    return executor.fit_predict(estimator_handle, dataset, horizon)
+    if horizon <= 0:
+        return {
+            "valid": False,
+            "error": f"Invalid horizon={horizon}. horizon must be a positive integer greater than 0.",
+            "warnings": warnings,
+        }
+    return {"valid": True, "warnings": warnings}
 
 
 def fit_tool(
     estimator_handle: str,
-    dataset: str,
+    X_dataset: str | None = None,
+    y_dataset: str | None = None,
+    X_handle: str | None = None,
+    y_handle: str | None = None,
+    fh: Any | None = None,
+    run_async: bool = False,
 ) -> dict[str, Any]:
     """
-    Fit an estimator on a dataset.
-
-    Args:
-        estimator_handle: Handle from instantiate_estimator
-        dataset: Name of demo dataset
-
-    Returns:
-        Dictionary with success status
+    Fit an estimator on data.
     """
     executor = get_executor()
-    data_result = executor.load_dataset(dataset)
-    if not data_result["success"]:
-        return data_result
 
-    return executor.fit(
-        estimator_handle,
-        y=data_result["data"],
-        X=data_result.get("exog"),
-    )
+    # We must resolve y and X from the provided handles/datasets
+    X = None
+    y = None
+
+    if X_handle:
+        if X_handle not in executor._data_handles:
+            return {"success": False, "error": f"Unknown X data handle: {X_handle}"}
+        X = executor._data_handles[X_handle]["y"]  # 'y' stores the primary object
+
+    if y_handle:
+        if y_handle not in executor._data_handles:
+            return {"success": False, "error": f"Unknown y data handle: {y_handle}"}
+        y = executor._data_handles[y_handle]["y"]
+
+    if X_dataset and X_dataset == y_dataset:
+        data_res = executor.load_dataset(X_dataset)
+        if not data_res["success"]:
+            return data_res
+        y = data_res["y"]
+        X = data_res["X"]
+    else:
+        if X_dataset:
+            data_res = executor.load_dataset(X_dataset)
+            if not data_res["success"]:
+                return data_res
+            X = data_res["X"] if data_res["X"] is not None else data_res["y"]
+
+        if y_dataset:
+            data_res = executor.load_dataset(y_dataset)
+            if not data_res["success"]:
+                return data_res
+            y = data_res["y"]
+
+    if run_async:
+        import asyncio
+
+        from sktime_mcp.runtime.jobs import get_job_manager
+
+        job_manager = get_job_manager()
+        try:
+            handle_info = executor._handle_manager.get_info(estimator_handle)
+            estimator_name = handle_info.estimator_name
+        except Exception:
+            estimator_name = "Unknown"
+
+        source_name = y_dataset if y_dataset else (y_handle if y_handle else "data")
+        job_id = job_manager.create_job(
+            job_type="fit",
+            estimator_handle=estimator_handle,
+            estimator_name=estimator_name,
+            dataset_name=source_name,
+            total_steps=2,
+        )
+        task = asyncio.create_task(
+            executor.fit_async(
+                handle_id=estimator_handle,
+                X_dataset=X_dataset,
+                y_dataset=y_dataset,
+                X_handle=X_handle,
+                y_handle=y_handle,
+                fh=fh,
+                job_id=job_id,
+            )
+        )
+        job_manager.register_task(job_id, task)
+        return {"success": True, "job_id": job_id, "status": "running"}
+    fit_result = executor.fit(estimator_handle, y=y, X=X, fh=fh)
+
+    if fit_result.get("success") and y_dataset:
+        try:
+            handle_info = executor._handle_manager.get_info(estimator_handle)
+            handle_info.metadata["training_dataset"] = y_dataset
+        except Exception as e:
+            logger.warning(f"Could not record training dataset: {e}")
+
+    return fit_result
 
 
 def predict_tool(
     estimator_handle: str,
     horizon: int = 12,
+    mode: str = "predict",
+    coverage: float | list[float] = 0.9,
+    alpha: float | list[float] | None = None,
+    X_dataset: str | None = None,
+    y_dataset: str | None = None,
+    X_handle: str | None = None,
+    y_handle: str | None = None,
+    run_async: bool = False,
 ) -> dict[str, Any]:
     """
     Generate predictions from a fitted estimator.
 
-    Args:
-        estimator_handle: Handle of a fitted estimator
-        horizon: Forecast horizon
-
-    Returns:
-        Dictionary with predictions
+    Set run_async=True to run as a background job and return a job_id.
     """
+    validation = _validate_horizon(horizon)
+    if not validation["valid"]:
+        return {
+            "success": False,
+            "error": validation["error"],
+        }
+
     executor = get_executor()
+
+    if run_async:
+        import asyncio
+
+        from sktime_mcp.runtime.jobs import get_job_manager
+
+        job_manager = get_job_manager()
+        try:
+            estimator_name = executor._handle_manager.get_info(estimator_handle).estimator_name
+        except Exception:
+            estimator_name = "Unknown"
+
+        source_name = y_dataset or y_handle or "data"
+        job_id = job_manager.create_job(
+            job_type="predict",
+            estimator_handle=estimator_handle,
+            estimator_name=estimator_name,
+            dataset_name=source_name,
+            horizon=horizon,
+            total_steps=2,
+        )
+        task = asyncio.create_task(
+            executor.predict_async(
+                handle_id=estimator_handle,
+                horizon=horizon,
+                mode=mode,
+                coverage=coverage,
+                alpha=alpha,
+                X_dataset=X_dataset,
+                y_dataset=y_dataset,
+                X_handle=X_handle,
+                y_handle=y_handle,
+                job_id=job_id,
+            )
+        )
+        job_manager.register_task(job_id, task)
+        return {"success": True, "job_id": job_id, "status": "running"}
+
+    X = None
+    y = None
+
+    if X_handle:
+        if X_handle not in executor._data_handles:
+            return {"success": False, "error": f"Unknown X data handle: {X_handle}"}
+        X = executor._data_handles[X_handle]["y"]
+
+    if y_handle:
+        if y_handle not in executor._data_handles:
+            return {"success": False, "error": f"Unknown y data handle: {y_handle}"}
+        y = executor._data_handles[y_handle]["y"]
+
+    if X_dataset and X_dataset == y_dataset:
+        data_res = executor.load_dataset(X_dataset)
+        if not data_res["success"]:
+            return data_res
+        y = data_res["y"]
+        X = data_res["X"]
+    else:
+        if X_dataset:
+            data_res = executor.load_dataset(X_dataset)
+            if not data_res["success"]:
+                return data_res
+            X = data_res["X"] if data_res["X"] is not None else data_res["y"]
+
+        if y_dataset:
+            data_res = executor.load_dataset(y_dataset)
+            if not data_res["success"]:
+                return data_res
+            y = data_res["y"]
+
     fh = list(range(1, horizon + 1))
-    return executor.predict(estimator_handle, fh=fh)
+
+    # We must patch executor.predict to accept y as well, to support annotators
+    return executor.predict(
+        estimator_handle,
+        fh=fh,
+        X=X,
+        y=y,
+        mode=mode,
+        coverage=coverage,
+        alpha=alpha,
+    )
 
 
 def list_datasets_tool() -> dict[str, Any]:
     """
     List available demo datasets.
-
-    Returns:
-        Dictionary with list of dataset names
     """
     executor = get_executor()
     return {
@@ -103,77 +249,50 @@ def list_datasets_tool() -> dict[str, Any]:
     }
 
 
-def fit_predict_async_tool(
+def update_tool(
     estimator_handle: str,
-    dataset: str,
-    horizon: int = 12,
+    X_dataset: str | None = None,
+    y_dataset: str | None = None,
+    X_handle: str | None = None,
+    y_handle: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Execute a fit-predict workflow in the background (non-blocking).
-
-    This tool schedules the training as a background job and returns immediately
-    with a job_id. Use check_job_status to monitor progress.
-
-    Args:
-        estimator_handle: Handle from instantiate_estimator
-        dataset: Name of demo dataset (e.g., "airline", "sunspots")
-        horizon: Forecast horizon (default: 12)
-
-    Returns:
-        Dictionary with:
-        - success: bool
-        - job_id: Job ID for tracking progress
-        - message: Information about the job
-
-    Example:
-        >>> fit_predict_async_tool("est_abc123", "airline", horizon=12)
-        {
-            "success": True,
-            "job_id": "abc-123-def-456",
-            "message": "Training job started. Use check_job_status to monitor progress."
-        }
-    """
-
-    from sktime_mcp.runtime.jobs import get_job_manager
-
     executor = get_executor()
-    job_manager = get_job_manager()
 
-    # Get estimator info
-    try:
-        handle_info = executor._handle_manager.get_info(estimator_handle)
-        estimator_name = handle_info.estimator_name
-    except Exception as e:
-        logger.warning(f"Could not get estimator name: {e}")
-        estimator_name = "Unknown"
+    X = None
+    y = None
 
-    # Create job
-    job_id = job_manager.create_job(
-        job_type="fit_predict",
-        estimator_handle=estimator_handle,
-        estimator_name=estimator_name,
-        dataset_name=dataset,
-        horizon=horizon,
-        total_steps=3,
-    )
+    if X_handle:
+        if X_handle not in executor._data_handles:
+            return {"success": False, "error": f"Unknown X data handle: {X_handle}"}
+        X = executor._data_handles[X_handle]["y"]
 
-    # Schedule the async coroutine on the event loop
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        # No event loop in current thread, create one
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    if y_handle:
+        if y_handle not in executor._data_handles:
+            return {"success": False, "error": f"Unknown y data handle: {y_handle}"}
+        y = executor._data_handles[y_handle]["y"]
 
-    # Schedule the coroutine (non-blocking!)
-    coro = executor.fit_predict_async(estimator_handle, dataset, horizon, job_id)
-    asyncio.run_coroutine_threadsafe(coro, loop)
+    if X_dataset and X_dataset == y_dataset:
+        data_res = executor.load_dataset(X_dataset)
+        if not data_res["success"]:
+            return data_res
+        y = data_res["y"]
+        X = data_res["X"]
+    else:
+        if X_dataset:
+            data_res = executor.load_dataset(X_dataset)
+            if not data_res["success"]:
+                return data_res
+            X = data_res["X"] if data_res["X"] is not None else data_res["y"]
 
-    return {
-        "success": True,
-        "job_id": job_id,
-        "message": f"Training job started for {estimator_name} on {dataset}. Use check_job_status('{job_id}') to monitor progress.",
-        "estimator": estimator_name,
-        "dataset": dataset,
-        "horizon": horizon,
-    }
+        if y_dataset:
+            data_res = executor.load_dataset(y_dataset)
+            if not data_res["success"]:
+                return data_res
+            y = data_res["y"]
+
+    return executor.update(estimator_handle, y=y, X=X)
+
+
+def get_fitted_params_tool(estimator_handle: str) -> dict[str, Any]:
+    executor = get_executor()
+    return executor.get_fitted_params(estimator_handle)

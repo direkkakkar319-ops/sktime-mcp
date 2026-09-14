@@ -5,7 +5,7 @@ Defines the interface that all data source adapters must implement.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -34,12 +34,30 @@ class DataSourceAdapter(ABC):
     @abstractmethod
     def load(self) -> pd.DataFrame:
         """
-        Load data from the source.
+        Load data from the source (synchronous).
 
         Returns:
             DataFrame with time index
         """
         pass
+
+    async def load_async(self, job_id: str | None = None) -> pd.DataFrame:
+        """
+        Load data from the source (asynchronous).
+
+        Default implementation runs the synchronous load() in a separate thread.
+        Adapters should override this for true non-blocking async IO.
+
+        Args:
+            job_id: Optional job ID for progress reporting
+
+        Returns:
+            DataFrame with time index
+        """
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.load)
 
     @abstractmethod
     def validate(self, data: pd.DataFrame) -> tuple[bool, dict[str, Any]]:
@@ -50,15 +68,13 @@ class DataSourceAdapter(ABC):
             data: DataFrame to validate
 
         Returns:
-            Tuple of (is_valid, validation_report)
-            validation_report contains:
-                - valid: bool
-                - errors: List[str]
-                - warnings: List[str]
+            Tuple of ``(is_valid, validation_report)``, where
+            ``validation_report`` contains the keys ``valid`` (bool),
+            ``errors`` (list of str), and ``warnings`` (list of str).
         """
         pass
 
-    def to_sktime_format(self, data: pd.DataFrame) -> tuple[pd.Series, Optional[pd.DataFrame]]:
+    def to_sktime_format(self, data: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame | None]:
         """
         Convert to sktime format (y, X).
 
@@ -74,13 +90,27 @@ class DataSourceAdapter(ABC):
         target_col = self.config.get("target_column")
         exog_cols = self.config.get("exog_columns", [])
 
-        if target_col and target_col in data.columns:
+        if target_col is not None and target_col not in data.columns:
+            available_columns = ", ".join(repr(col) for col in data.columns)
+            raise ValueError(
+                f"Target column {target_col!r} not found in data. "
+                f"Available columns: [{available_columns}]"
+            )
+
+        if target_col is not None:
             y = data[target_col]
 
             # Get exogenous variables if specified
             if exog_cols:
-                valid_exog_cols = [col for col in exog_cols if col in data.columns]
-                X = data[valid_exog_cols] if valid_exog_cols else None
+                missing_exog_cols = [col for col in exog_cols if col not in data.columns]
+                if missing_exog_cols:
+                    available_columns = ", ".join(repr(col) for col in data.columns)
+                    raise ValueError(
+                        f"Exogenous column(s) not found in data: {missing_exog_cols!r}. "
+                        f"Available columns: [{available_columns}]"
+                    )
+
+                X = data[exog_cols]
             else:
                 # Use all columns except target as exogenous
                 other_cols = [col for col in data.columns if col != target_col]
