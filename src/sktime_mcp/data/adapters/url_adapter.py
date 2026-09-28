@@ -64,6 +64,10 @@ class UrlAdapter(DataSourceAdapter):
       **opt-in** because self-hosted / LAN data sources are legitimate.
       Note: this check **cannot** prevent DNS-rebinding attacks — a DNS name
       that initially resolves to a public IP may later resolve to a private one.
+      The check also does **not** follow HTTP redirects; if the server redirects
+      to a private/internal address the request will still proceed.  To
+      re-validate each hop, an external HTTP library with redirect hooks is
+      required.
     """
 
     @staticmethod
@@ -76,7 +80,8 @@ class UrlAdapter(DataSourceAdapter):
             The URL to validate.
         block_private_ips : bool, default False
             If True, resolve the hostname and reject private / reserved /
-            loopback / link-local addresses.
+            loopback / link-local addresses. Note that this check does not
+            follow HTTP redirects (or re-validate each hop).
 
         Raises
         ------
@@ -229,21 +234,23 @@ class UrlAdapter(DataSourceAdapter):
         try:
             # Download the file with timeout and size cap
             response = urllib.request.urlopen(url, timeout=timeout)
-            downloaded = 0
-            with temp_file_path.open("wb") as f:
-                while True:
-                    chunk = response.read(1024 * 64)
-                    if not chunk:
-                        break
-                    downloaded += len(chunk)
-                    if downloaded > max_bytes:
-                        raise ValueError(
-                            f"Download exceeded maximum size of "
-                            f"{max_bytes / 1024 / 1024:.0f} MB. "
-                            f"Increase 'max_download_bytes' in config if needed."
-                        )
-                    f.write(chunk)
-            response.close()
+            try:
+                downloaded = 0
+                with temp_file_path.open("wb") as f:
+                    while True:
+                        chunk = response.read(1024 * 64)
+                        if not chunk:
+                            break
+                        downloaded += len(chunk)
+                        if downloaded > max_bytes:
+                            raise ValueError(
+                                f"Download exceeded maximum size of "
+                                f"{max_bytes / 1024 / 1024:.0f} MB. "
+                                f"Increase 'max_download_bytes' in config if needed."
+                            )
+                        f.write(chunk)
+            finally:
+                response.close()
 
             # Prepare config for FileAdapter
             file_config = dict(self.config)
